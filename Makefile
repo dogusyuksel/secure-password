@@ -2,7 +2,7 @@
 CC = gcc
 RM = rm -rf
 CFLAGS = -Wall -Wextra -Werror -g3 -O0
-TARGET_EXECUTABLE_NAME=emd
+TARGET_EXECUTABLE_NAME=easy-md
 
 SUBDIRS = 
 

@@ -14,33 +14,172 @@
 #include "main.h"
 
 static struct termios *oldt = NULL;
+static unsigned int ordered_list_counter = 0;
 
 static char *commands[] = {COMMAND_HEADING_1, COMMAND_HEADING_2, COMMAND_HEADING_3,
 							COMMAND_HEADING_4, COMMAND_HEADING_5, COMMAND_HEADING_6,
-							NEW_PARAGRAPHS, LINE_BREAK, BOLD};
+							NEW_PARAGRAPHS, LINE_BREAK, BOLD,
+							ITALIC, BOLDITALIC, QUOTE,
+							NESTED_QUOTE, ORDERED_LIST, UNORDERED_LIST};
 static int (*operation[])(char *, char *) = {fheading1, fheading2, fheading3,
 											fheading4, fheading5, fheading6,
-											fparagraph, flinebreak, fbold};
+											fparagraph, flinebreak, fbold,
+											fitalic, fbolditalic, fquote,
+											fnestedquote, forderedlist, funorderedlist};
 
 static struct option parameters[] = {
 	{ "help",				no_argument,		0,	0x100	},
 	{ "file-name",			required_argument,	0,	0x101	},
+	{ "version",			no_argument,		0,	0x102	},
 	{ NULL,					0,					0, 	0 		},
 };
 
-static void print_help_exit (const char *name)
+static void print_help_exit (void)
 {
-	if (!name) {
-		errorf("name is null\n");
-		exit(NOK);
+	debugf("please check README.md here: https://github.com/dogusyuksel/easy-markdown/blob/main/README.md\n");
+
+	exit(OK);
+}
+
+int funorderedlist(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
 	}
-	debugf("\n%s application is used \n", name);
 
-	debugf("\nTODOn");
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
 
-	debugf("\n");
+	fprintf(fp, "- %s\n", buf ? buf : "");
 
-	exit(NOK);
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int forderedlist(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	++ordered_list_counter;
+	fprintf(fp, "%s%d. %s\n", (ordered_list_counter == 1) ? "\n" : "", ordered_list_counter, buf ? buf : "");
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int fnestedquote(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	fprintf(fp, "\n>> %s   ", buf ? buf : "");
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int fquote(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	fprintf(fp, "\n> %s   ", buf ? buf : "");
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int fbolditalic(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!buf || !filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	if (strstr(buf, ASTERIKS)) {
+		fprintf(fp, " ___%s___", buf);
+	} else {
+		fprintf(fp, " ***%s***", buf);
+	}
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int fitalic(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!buf || !filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	if (strstr(buf, ASTERIKS)) {
+		fprintf(fp, " _%s_", buf);
+	} else {
+		fprintf(fp, " *%s*", buf);
+	}
+
+	FCLOSE(fp);
+
+	return OK;
 }
 
 int fbold(char *buf, char *filename)
@@ -231,6 +370,9 @@ static void process_command(char *buffer, char *filename)
 		for (i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
 			if (!strcmp(token, commands[i])) {
 				if (i < sizeof(operation) / sizeof(operation[0])) {
+					if (strcmp(commands[i], ORDERED_LIST)) {
+						ordered_list_counter = 0;
+					}
 					operation[i](&rest[j], filename);
 				}
 			}
@@ -242,6 +384,18 @@ static void clear_screen(void)
 {
 	debugf("\033[2K");
 	debugf("\r");
+}
+
+static void show_all_commands(void)
+{
+	int i = 0;
+	int size = sizeof(commands) / sizeof(commands[0]);
+
+	debugf("possible commands: ");
+	for (i = 0; i < size; i++) {
+		debugf("%s ", commands[i]);
+	}
+	debugf("\n");
 }
 
 static void read_and_process(char *filename)
@@ -267,6 +421,12 @@ static void read_and_process(char *filename)
 
 		if (c == TAB) {
 			int size = sizeof(commands) / sizeof(commands[0]);
+			count_count = 0;
+
+			if (counter == 0) {
+				show_all_commands();
+				continue;
+			}
 
 			if (last_idx >= size - 1) {
 				last_idx = -1;
@@ -286,18 +446,22 @@ static void read_and_process(char *filename)
 				}
 			}
 
-			clear_screen();
 			if (counter == 0) {
+				show_all_commands();
 				continue;
 			}
 
 			if (count_count == 1) {
+				clear_screen();
 				memset(buffer, 0, sizeof(buffer));
 				counter = strlen(commands[last_idx]);
 				memcpy(buffer, commands[last_idx], counter);
 				debugf("%s", buffer);
-			} else if (count_count >= 0) {
-				debugf("%s", commands[last_idx]);
+			} else if (count_count > 0) {
+				clear_screen();
+				if (last_idx >= 0) {
+					debugf("%s", commands[last_idx]);
+				}
 			}
 
 			continue;
@@ -346,6 +510,19 @@ static void read_and_process(char *filename)
 
 		buffer[counter++] = c;
 
+		if (counter >= MAX_LINE_SIZE) {
+			process_command(buffer, filename);
+
+			memset(buffer, 0, sizeof(buffer));
+			counter = 0;
+			command_got = false;
+			clear_screen();
+			last_idx = -1;
+			count_count = 0;
+
+			continue;
+		}
+
 		if (!command_got && strstr(buffer, COMMAND_QUIT)) {
 			exit_needed = true;
 		}
@@ -368,7 +545,7 @@ int main(int argc, char **argv)
 	while ((c = getopt_long(argc, argv, "h", parameters, &o)) != -1) {
 		switch (c) {
 			case 0x100:
-				print_help_exit(argv[0]);
+				print_help_exit();
 				break;
 			case 0x101:
 				filename = strdup(optarg);
@@ -376,6 +553,10 @@ int main(int argc, char **argv)
 					errorf("strdup failed\n");
 					goto fail;
 				}
+				break;
+			case 0x102:
+				debugf("%s version %s\n", argv[0], VERSION);
+				return OK;
 				break;
 			default:
 				debugf("unknown argument\n");
@@ -385,10 +566,10 @@ int main(int argc, char **argv)
 
 	if (!filename) {
 		errorf("file-name is mandatory\n");
-		print_help_exit(argv[0]);
+		print_help_exit();
 	}
 
-	debugf("%s started\n", argv[0]);
+	debugf("******* %s started ******* \n", argv[0]);
 
 	read_and_process(filename);
 
@@ -399,7 +580,8 @@ fail:
 
 out:
 	restore_icanon(&oldt);
-	debugf("\n");
+
+	debugf("\n******* %s ended ******* \n", argv[0]);
 
 	return ret;
 }

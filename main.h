@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <stdarg.h>
 
+#define VERSION		"01.00"
+
 #define OK			0
 #define NOK			1
 
@@ -34,6 +36,12 @@
 #define NEW_PARAGRAPHS		"paragraph"
 #define LINE_BREAK			"linebreak"
 #define BOLD				"bold"
+#define ITALIC				"italic"
+#define BOLDITALIC			"bolditalic"
+#define QUOTE				"quote"
+#define NESTED_QUOTE		"nestedquote"
+#define ORDERED_LIST		"orderedlist"
+#define UNORDERED_LIST		"unorderedlist"
 
 #define debugf(...)		fprintf(stdout, __VA_ARGS__)
 #define errorf(...)		fprintf(stderr, __VA_ARGS__)
@@ -65,5 +73,17 @@ int fparagraph(char *buf, char *filename);
 int flinebreak(char *buf, char *filename);
 
 int fbold(char *buf, char *filename);
+
+int fitalic(char *buf, char *filename);
+
+int fbolditalic(char *buf, char *filename);
+
+int fquote(char *buf, char *filename);
+
+int fnestedquote(char *buf, char *filename);
+
+int forderedlist(char *buf, char *filename);
+
+int funorderedlist(char *buf, char *filename);
 
 #endif //_MAIN_H___
