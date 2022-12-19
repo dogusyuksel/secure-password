@@ -16,9 +16,11 @@
 static struct termios *oldt = NULL;
 
 static char *commands[] = {COMMAND_HEADING_1, COMMAND_HEADING_2, COMMAND_HEADING_3,
-							COMMAND_HEADING_4, COMMAND_HEADING_5, COMMAND_HEADING_6};
+							COMMAND_HEADING_4, COMMAND_HEADING_5, COMMAND_HEADING_6,
+							NEW_PARAGRAPHS, LINE_BREAK, BOLD};
 static int (*operation[])(char *, char *) = {fheading1, fheading2, fheading3,
-											fheading4, fheading5, fheading6};
+											fheading4, fheading5, fheading6,
+											fparagraph, flinebreak, fbold};
 
 static struct option parameters[] = {
 	{ "help",				no_argument,		0,	0x100	},
@@ -39,6 +41,76 @@ static void print_help_exit (const char *name)
 	debugf("\n");
 
 	exit(NOK);
+}
+
+int fbold(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!buf || !filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	if (strstr(buf, ASTERIKS)) {
+		fprintf(fp, " __%s__", buf);
+	} else {
+		fprintf(fp, " **%s**", buf);
+	}
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int flinebreak(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	fprintf(fp, "   \n%s", (buf) ? buf : "");
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int fparagraph(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	fprintf(fp, "\n\n%s", (buf) ? buf : "");
+
+	FCLOSE(fp);
+
+	return OK;
 }
 
 static int heading_util(char *buf, char *filename, unsigned int headingcount)
@@ -158,7 +230,9 @@ static void process_command(char *buffer, char *filename)
 		}
 		for (i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
 			if (!strcmp(token, commands[i])) {
-				operation[i](&rest[j], filename);
+				if (i < sizeof(operation) / sizeof(operation[0])) {
+					operation[i](&rest[j], filename);
+				}
 			}
 		}
 	}
@@ -173,7 +247,6 @@ static void clear_screen(void)
 static void read_and_process(char *filename)
 {
 	char c;
-	char *command = NULL;
 	char buffer[MAX_LINE_SIZE] = {0};
 	int i = 0;
 	int last_idx = -1;
@@ -223,7 +296,7 @@ static void read_and_process(char *filename)
 				counter = strlen(commands[last_idx]);
 				memcpy(buffer, commands[last_idx], counter);
 				debugf("%s", buffer);
-			} else if (count_count) {
+			} else if (count_count >= 0) {
 				debugf("%s", commands[last_idx]);
 			}
 
@@ -241,13 +314,7 @@ static void read_and_process(char *filename)
 					debugf("%s ", buffer);
 				}
 
-				command = strdup(buffer);
-				if (!command) {
-					errorf("strdup failed\n");
-					goto out;
-				}
-
-				if (strstr(command, COMMAND_QUIT)) {
+				if (strstr(buffer, COMMAND_QUIT)) {
 					exit_needed = true;
 				}
 			}
@@ -257,7 +324,12 @@ static void read_and_process(char *filename)
 				memset(buffer, 0, sizeof(buffer));
 				counter = 0;
 				command_got = false;
-		} else if (c == BACKSPACE || c == DEL) {
+				clear_screen();
+				last_idx = -1;
+				count_count = 0;
+
+				continue;
+		} else if (c == BACKSPACE) {
 			clear_screen();
 			if (counter == 0) {
 				continue;
@@ -268,6 +340,8 @@ static void read_and_process(char *filename)
 			debugf("%s", buffer);
 
 			continue;
+		} else if (c < SPACE || c >= DEL) {
+			continue;
 		}
 
 		buffer[counter++] = c;
@@ -276,9 +350,6 @@ static void read_and_process(char *filename)
 			exit_needed = true;
 		}
 	}
-
-out:
-	FREE(command);
 }
 
 int main(int argc, char **argv)

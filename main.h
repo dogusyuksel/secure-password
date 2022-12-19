@@ -22,6 +22,8 @@
 #define ENTER		'\r'
 #define NL			'\n'
 
+#define ASTERIKS	"*"
+
 #define COMMAND_QUIT		"quit"
 #define COMMAND_HEADING_1	"heading1"
 #define COMMAND_HEADING_2	"heading2"
@@ -29,6 +31,9 @@
 #define COMMAND_HEADING_4	"heading4"
 #define COMMAND_HEADING_5	"heading5"
 #define COMMAND_HEADING_6	"heading6"
+#define NEW_PARAGRAPHS		"paragraph"
+#define LINE_BREAK			"linebreak"
+#define BOLD				"bold"
 
 #define debugf(...)		fprintf(stdout, __VA_ARGS__)
 #define errorf(...)		fprintf(stderr, __VA_ARGS__)
@@ -42,6 +47,7 @@
 
 #define FCLOSE(p)		{										\
 							if (p) {							\
+								fflush(p);						\
 								fclose(p);						\
 								p = NULL;						\
 							}									\
@@ -53,5 +59,11 @@ int fheading3(char *buf, char *filename);
 int fheading4(char *buf, char *filename);
 int fheading5(char *buf, char *filename);
 int fheading6(char *buf, char *filename);
+
+int fparagraph(char *buf, char *filename);
+
+int flinebreak(char *buf, char *filename);
+
+int fbold(char *buf, char *filename);
 
 #endif //_MAIN_H___
