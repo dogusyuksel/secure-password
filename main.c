@@ -663,6 +663,7 @@ static void read_and_process(char *filename)
 				goto cont_loop;
 			}
 			if (counter == 0) {
+				fparagraph("", filename);
 				continue;
 			}
 
