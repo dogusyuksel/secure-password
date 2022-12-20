@@ -8,6 +8,8 @@
 
 #define VERSION		"01.00"
 
+#define UNUSED(__val__)		((void)__val__)
+
 #define OK			0
 #define NOK			1
 
@@ -23,6 +25,7 @@
 #define DEL			126
 #define ENTER		'\r'
 #define NL			'\n'
+#define ESC			'\e'
 
 #define ASTERIKS	"*"
 
@@ -42,6 +45,11 @@
 #define NESTED_QUOTE		"nestedquote"
 #define ORDERED_LIST		"orderedlist"
 #define UNORDERED_LIST		"unorderedlist"
+#define START_CODEBLOCK		"startcode"
+#define URL					"url"
+#define NESTED_UNORDERED	"nestedunordered"
+#define TABLE_START			"tablestart"
+#define TABLE_ADD			"tableadd"
 
 #define debugf(...)		fprintf(stdout, __VA_ARGS__)
 #define errorf(...)		fprintf(stderr, __VA_ARGS__)
@@ -85,5 +93,13 @@ int fnestedquote(char *buf, char *filename);
 int forderedlist(char *buf, char *filename);
 
 int funorderedlist(char *buf, char *filename);
+int fnestedunordered(char *buf, char *filename);
+
+int fstartcode(char *buf, char *filename);
+
+int furl(char *buf, char *filename);
+
+int ftablestart(char *buf, char *filename);
+int ftableadd(char *buf, char *filename);
 
 #endif //_MAIN_H___

@@ -15,17 +15,22 @@
 
 static struct termios *oldt = NULL;
 static unsigned int ordered_list_counter = 0;
+static bool code_started = false;
 
 static char *commands[] = {COMMAND_HEADING_1, COMMAND_HEADING_2, COMMAND_HEADING_3,
 							COMMAND_HEADING_4, COMMAND_HEADING_5, COMMAND_HEADING_6,
 							NEW_PARAGRAPHS, LINE_BREAK, BOLD,
 							ITALIC, BOLDITALIC, QUOTE,
-							NESTED_QUOTE, ORDERED_LIST, UNORDERED_LIST};
+							NESTED_QUOTE, ORDERED_LIST, UNORDERED_LIST,
+							START_CODEBLOCK, URL, NESTED_UNORDERED,
+							TABLE_START, TABLE_ADD};
 static int (*operation[])(char *, char *) = {fheading1, fheading2, fheading3,
 											fheading4, fheading5, fheading6,
 											fparagraph, flinebreak, fbold,
 											fitalic, fbolditalic, fquote,
-											fnestedquote, forderedlist, funorderedlist};
+											fnestedquote, forderedlist, funorderedlist,
+											fstartcode, furl, fnestedunordered,
+											ftablestart, ftableadd};
 
 static struct option parameters[] = {
 	{ "help",				no_argument,		0,	0x100	},
@@ -39,6 +44,142 @@ static void print_help_exit (void)
 	debugf("please check README.md here: https://github.com/dogusyuksel/easy-markdown/blob/main/README.md\n");
 
 	exit(OK);
+}
+
+int ftablestart(char *buf, char *filename)
+{
+	unsigned int i = 0;
+	unsigned int column_count = 0;
+	FILE *fp = NULL;
+	char *rest = NULL;
+	char *token;
+	char delim = SPACE;
+
+	if (!buf || !filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	fprintf(fp, "\n");
+	for (token = strtok_r(buf, &delim, &rest);
+		token != NULL;
+		token = strtok_r(NULL, &delim, &rest)) {
+		fprintf(fp, " | %s ", token);
+		column_count++;
+	}
+	fprintf(fp, "|\n");
+
+	for (i = 0; i < column_count; i++) {
+		fprintf(fp, " | :---: ");
+	}
+	fprintf(fp, "|\n");
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int ftableadd(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+	char *rest = NULL;
+	char *token;
+	char delim = SPACE;
+
+	if (!buf || !filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	for (token = strtok_r(buf, &delim, &rest);
+		token != NULL;
+		token = strtok_r(NULL, &delim, &rest)) {
+		fprintf(fp, " | %s ", token);
+	}
+	fprintf(fp, "|\n");
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int fnestedunordered(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	fprintf(fp, "    - %s\n", buf ? buf : "");
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int furl(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+	char *rest = NULL;
+	char *token;
+	char delim = SPACE;
+
+	if (!buf || !filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	fprintf(fp, "[");
+	for (token = strtok_r(buf, &delim, &rest);
+		token != NULL;
+		token = strtok_r(NULL, &delim, &rest)) {
+		if (strstr(token, "http")) {
+			fprintf(fp, "](%s)", token);
+		} else {
+			fprintf(fp, "%s ", token);
+		}
+	}
+	fprintf(fp, "\n");
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
+int fstartcode(char *buf, char *filename)
+{
+	UNUSED(buf);
+	UNUSED(filename);
+
+	code_started = true;
+
+	return OK;
 }
 
 int funorderedlist(char *buf, char *filename)
@@ -398,6 +539,37 @@ static void show_all_commands(void)
 	debugf("\n");
 }
 
+static int codeblock_helper(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+	char *rest = NULL;
+	char *token;
+	char delim = NL;
+
+	if (!filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	fprintf(fp, "\n\n");
+	for (token = strtok_r(buf, &delim, &rest);
+		token != NULL;
+		token = strtok_r(NULL, &delim, &rest)) {
+		fprintf(fp, "    %s\n", token);
+	}
+
+
+	FCLOSE(fp);
+
+	return OK;
+}
+
 static void read_and_process(char *filename)
 {
 	char c;
@@ -422,6 +594,10 @@ static void read_and_process(char *filename)
 		if (c == TAB) {
 			int size = sizeof(commands) / sizeof(commands[0]);
 			count_count = 0;
+
+			if (code_started) {
+				goto cont_loop;
+			}
 
 			if (counter == 0) {
 				show_all_commands();
@@ -478,12 +654,32 @@ static void read_and_process(char *filename)
 					debugf("%s ", buffer);
 				}
 
-				if (strstr(buffer, COMMAND_QUIT)) {
+				if (!strcmp(buffer, COMMAND_QUIT)) {
 					exit_needed = true;
 				}
 			}
 		} else if (c == ENTER || c == NL) {
-				process_command(buffer, filename);
+			if (code_started) {
+				goto cont_loop;
+			}
+			if (counter == 0) {
+				continue;
+			}
+
+			process_command(buffer, filename);
+
+			memset(buffer, 0, sizeof(buffer));
+			counter = 0;
+			command_got = false;
+			clear_screen();
+			last_idx = -1;
+			count_count = 0;
+
+			continue;
+		} else if (c == ESC) {
+			if (code_started) {
+				code_started = false;
+				codeblock_helper(buffer, filename);
 
 				memset(buffer, 0, sizeof(buffer));
 				counter = 0;
@@ -492,7 +688,10 @@ static void read_and_process(char *filename)
 				last_idx = -1;
 				count_count = 0;
 
-				continue;
+				debugf("code mode ended\n");
+			}
+
+			continue;
 		} else if (c == BACKSPACE) {
 			clear_screen();
 			if (counter == 0) {
@@ -508,6 +707,7 @@ static void read_and_process(char *filename)
 			continue;
 		}
 
+cont_loop:
 		buffer[counter++] = c;
 
 		if (counter >= MAX_LINE_SIZE) {
@@ -523,7 +723,7 @@ static void read_and_process(char *filename)
 			continue;
 		}
 
-		if (!command_got && strstr(buffer, COMMAND_QUIT)) {
+		if (!command_got && !strcmp(buffer, COMMAND_QUIT)) {
 			exit_needed = true;
 		}
 	}
