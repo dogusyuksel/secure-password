@@ -16,6 +16,8 @@
 static struct termios *oldt = NULL;
 static unsigned int ordered_list_counter = 0;
 static bool code_started = false;
+static bool free_started = false;
+static bool exit_needed = false;
 
 static char *commands[] = {COMMAND_HEADING_1, COMMAND_HEADING_2, COMMAND_HEADING_3,
 							COMMAND_HEADING_4, COMMAND_HEADING_5, COMMAND_HEADING_6,
@@ -23,14 +25,14 @@ static char *commands[] = {COMMAND_HEADING_1, COMMAND_HEADING_2, COMMAND_HEADING
 							ITALIC, BOLDITALIC, QUOTE,
 							NESTED_QUOTE, ORDERED_LIST, UNORDERED_LIST,
 							START_CODEBLOCK, URL, NESTED_UNORDERED,
-							TABLE_START, TABLE_ADD};
+							TABLE_START, TABLE_ADD, FREESTYLE, COMMAND_QUIT};
 static int (*operation[])(char *, char *) = {fheading1, fheading2, fheading3,
 											fheading4, fheading5, fheading6,
 											fparagraph, flinebreak, fbold,
 											fitalic, fbolditalic, fquote,
 											fnestedquote, forderedlist, funorderedlist,
 											fstartcode, furl, fnestedunordered,
-											ftablestart, ftableadd};
+											ftablestart, ftableadd, ffreestyle, fquit};
 
 static struct option parameters[] = {
 	{ "help",				no_argument,		0,	0x100	},
@@ -53,7 +55,7 @@ int ftablestart(char *buf, char *filename)
 	FILE *fp = NULL;
 	char *rest = NULL;
 	char *token;
-	char delim = SPACE;
+	char delim = TAB;
 
 	if (!buf || !filename) {
 		errorf("parameters are wrong\n");
@@ -90,7 +92,7 @@ int ftableadd(char *buf, char *filename)
 	FILE *fp = NULL;
 	char *rest = NULL;
 	char *token;
-	char delim = SPACE;
+	char delim = TAB;
 
 	if (!buf || !filename) {
 		errorf("parameters are wrong\n");
@@ -172,12 +174,34 @@ int furl(char *buf, char *filename)
 	return OK;
 }
 
+int fquit(char *buf, char *filename)
+{
+	UNUSED(buf);
+	UNUSED(filename);
+
+	exit_needed = true;
+
+	return OK;
+}
+
+int ffreestyle(char *buf, char *filename)
+{
+	UNUSED(buf);
+	UNUSED(filename);
+
+	free_started = true;
+	debugf("free mode started, use 'ESC' to quit\n");
+
+	return OK;
+}
+
 int fstartcode(char *buf, char *filename)
 {
 	UNUSED(buf);
 	UNUSED(filename);
 
 	code_started = true;
+	debugf("code mode started, use 'ESC' to quit\n");
 
 	return OK;
 }
@@ -539,6 +563,27 @@ static void show_all_commands(void)
 	debugf("\n");
 }
 
+static int freeblock_helper(char *buf, char *filename)
+{
+	FILE *fp = NULL;
+
+	if (!filename) {
+		errorf("parameters are wrong\n");
+		return NOK;
+	}
+
+	fp = fopen(filename, "a+");
+	if (!fp) {
+		errorf("fopen failed\n");
+		return NOK;
+	}
+
+	fprintf(fp, "\n%s\n", buf);
+	FCLOSE(fp);
+
+	return OK;
+}
+
 static int codeblock_helper(char *buf, char *filename)
 {
 	FILE *fp = NULL;
@@ -564,7 +609,6 @@ static int codeblock_helper(char *buf, char *filename)
 		fprintf(fp, "    %s\n", token);
 	}
 
-
 	FCLOSE(fp);
 
 	return OK;
@@ -576,9 +620,10 @@ static void read_and_process(char *filename)
 	char buffer[MAX_LINE_SIZE] = {0};
 	int i = 0;
 	int last_idx = -1;
+	int last_idx_max = -1;
 	int count_count = 0;
 	unsigned int counter = 0;
-	bool exit_needed = false;
+	unsigned int command_len = 0;
 	bool command_got = false;
 
 	if (!filename) {
@@ -595,7 +640,7 @@ static void read_and_process(char *filename)
 			int size = sizeof(commands) / sizeof(commands[0]);
 			count_count = 0;
 
-			if (code_started) {
+			if (code_started || free_started || command_got) {
 				goto cont_loop;
 			}
 
@@ -604,16 +649,18 @@ static void read_and_process(char *filename)
 				continue;
 			}
 
-			if (last_idx >= size - 1) {
-				last_idx = -1;
-			}
-
-			for (i = last_idx + 1; i < size; i++) {
+			for (i = 0; i < size; i++) {
 				if (strstr(commands[i], buffer) &&
 					commands[i][0] == buffer[0]) {
 					count_count++;
+					last_idx_max = i;
 				}
 			}
+
+			if (last_idx >= last_idx_max) {
+				last_idx = -1;
+			}
+
 			for (i = last_idx + 1; i < size; i++) {
 				if (strstr(commands[i], buffer) &&
 					commands[i][0] == buffer[0]) {
@@ -650,20 +697,25 @@ static void read_and_process(char *filename)
 
 					memset(buffer, 0, sizeof(buffer));
 					counter = strlen(commands[last_idx]);
+
 					memcpy(buffer, commands[last_idx], counter);
-					debugf("%s ", buffer);
+					command_len = strlen(buffer);
+
+					buffer[command_len] = ' ';
+					counter++;
+
+					debugf("%s", buffer);
 				}
 
-				if (!strcmp(buffer, COMMAND_QUIT)) {
-					exit_needed = true;
+				if (strstr(buffer, TABLE_START)) {
+					debugf("(informative note: use TAB between table elements) ");
 				}
 			}
 		} else if (c == ENTER || c == NL) {
-			if (code_started) {
+			if (code_started || free_started) {
 				goto cont_loop;
 			}
 			if (counter == 0) {
-				fparagraph("", filename);
 				continue;
 			}
 
@@ -678,19 +730,31 @@ static void read_and_process(char *filename)
 
 			continue;
 		} else if (c == ESC) {
+			debugf("\b\b");
+
+			if (!code_started && !free_started) {
+				continue;
+			}
+
 			if (code_started) {
 				code_started = false;
 				codeblock_helper(buffer, filename);
 
-				memset(buffer, 0, sizeof(buffer));
-				counter = 0;
-				command_got = false;
-				clear_screen();
-				last_idx = -1;
-				count_count = 0;
-
 				debugf("code mode ended\n");
 			}
+			if (free_started) {
+				free_started = false;
+				freeblock_helper(buffer, filename);
+
+				debugf("free mode ended\n");
+			}
+
+			memset(buffer, 0, sizeof(buffer));
+			counter = 0;
+			command_got = false;
+			clear_screen();
+			last_idx = -1;
+			count_count = 0;
 
 			continue;
 		} else if (c == BACKSPACE) {
@@ -702,6 +766,11 @@ static void read_and_process(char *filename)
 			buffer[counter - 1] = '\0';
 			counter--;
 			debugf("%s", buffer);
+
+			if (command_got && counter < command_len) {
+				command_got = false;
+				last_idx = -1;
+			}
 
 			continue;
 		} else if (c < SPACE || c >= DEL) {

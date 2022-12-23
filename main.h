@@ -50,6 +50,7 @@
 #define NESTED_UNORDERED	"nestedunordered"
 #define TABLE_START			"tablestart"
 #define TABLE_ADD			"tableadd"
+#define FREESTYLE			"freestyle"
 
 #define debugf(...)		fprintf(stdout, __VA_ARGS__)
 #define errorf(...)		fprintf(stderr, __VA_ARGS__)
@@ -101,5 +102,9 @@ int furl(char *buf, char *filename);
 
 int ftablestart(char *buf, char *filename);
 int ftableadd(char *buf, char *filename);
+
+int ffreestyle(char *buf, char *filename);
+
+int fquit(char *buf, char *filename);
 
 #endif //_MAIN_H___
