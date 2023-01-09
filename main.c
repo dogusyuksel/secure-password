@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -9,839 +10,150 @@
 #include <signal.h>
 #include <sys/queue.h>
 #include <limits.h>
-#include <termios.h>
+#include <pwd.h>
+#include <time.h>
+#include <ctype.h>
+#include <openssl/evp.h>
+#include <openssl/aes.h>
+#include <openssl/err.h>
 
 #include "main.h"
+#include "aes.h"
 
-static struct termios *oldt = NULL;
-static unsigned int ordered_list_counter = 0;
-static bool code_started = false;
-static bool free_started = false;
-static bool exit_needed = false;
-
-static char *commands[] = {COMMAND_HEADING_1, COMMAND_HEADING_2, COMMAND_HEADING_3,
-							COMMAND_HEADING_4, COMMAND_HEADING_5, COMMAND_HEADING_6,
-							NEW_PARAGRAPHS, LINE_BREAK, BOLD,
-							ITALIC, BOLDITALIC, QUOTE,
-							NESTED_QUOTE, ORDERED_LIST, UNORDERED_LIST,
-							START_CODEBLOCK, URL, NESTED_UNORDERED,
-							TABLE_START, TABLE_ADD, FREESTYLE, COMMAND_QUIT};
-static int (*operation[])(char *, char *) = {fheading1, fheading2, fheading3,
-											fheading4, fheading5, fheading6,
-											fparagraph, flinebreak, fbold,
-											fitalic, fbolditalic, fquote,
-											fnestedquote, forderedlist, funorderedlist,
-											fstartcode, furl, fnestedunordered,
-											ftablestart, ftableadd, ffreestyle, fquit};
+static char *set = NULL;
+static char *data = NULL;
+static char *dump = NULL;
+static char *del = NULL;
 
 static struct option parameters[] = {
 	{ "help",				no_argument,		0,	0x100	},
-	{ "file-name",			required_argument,	0,	0x101	},
 	{ "version",			no_argument,		0,	0x102	},
+	{ "set",				required_argument,	0,	0x103	},
+	{ "dump",				required_argument,	0,	0x105	},
+	{ "data",				required_argument,	0,	0x106	},
+	{ "dump-all",			no_argument,		0,	0x108	},
+	{ "del",				required_argument,	0,	0x101	},
 	{ NULL,					0,					0, 	0 		},
 };
 
-static void print_help_exit (void)
+static int print_help_exit (void)
 {
-	debugf("please check README.md here: https://github.com/dogusyuksel/easy-markdown/blob/main/README.md\n");
+	printf("\nhelp for '%s' ver: %s\n\n", APP_NAME, VERSION);
 
-	exit(OK);
-}
+	printf("\t--version:\treturns version\n");
+	printf("\t--set:\trequires arg, like password keyword. Also requires 'data' option\n");
+	printf("\t--data:\trequires arg like the password itself. Also requires 'set' option\n");
+	printf("\t--del:\trequires arg, like password keyword.\n");
+	printf("\t--dump:\trequires arg. Will dump all similar-content-keyword-passwords\n");
+	printf("\t--dump-all:\tno arg required. Will dump all keyword-passwords pair\n");
 
-int ftablestart(char *buf, char *filename)
-{
-	unsigned int i = 0;
-	unsigned int column_count = 0;
-	FILE *fp = NULL;
-	char *rest = NULL;
-	char *token;
-	char delim = TAB;
-
-	if (!buf || !filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	fprintf(fp, "\n");
-	for (token = strtok_r(buf, &delim, &rest);
-		token != NULL;
-		token = strtok_r(NULL, &delim, &rest)) {
-		fprintf(fp, " | %s ", token);
-		column_count++;
-	}
-	fprintf(fp, "|\n");
-
-	for (i = 0; i < column_count; i++) {
-		fprintf(fp, " | :---: ");
-	}
-	fprintf(fp, "|\n");
-
-	FCLOSE(fp);
+	printf("\neg:\n");
+	printf("\tsudo ./spwd --set myPWD1 --data 12345\n");
+	printf("\tsudo ./spwd --set myPWD2 --data 67890\n");
+	printf("\tsudo ./spwd --del myPWD\n");
+	printf("\tsudo ./spwd --dump pwd\n");
+	printf("\tsudo ./spwd --dump-all\n");
 
 	return OK;
-}
-
-int ftableadd(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-	char *rest = NULL;
-	char *token;
-	char delim = TAB;
-
-	if (!buf || !filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	for (token = strtok_r(buf, &delim, &rest);
-		token != NULL;
-		token = strtok_r(NULL, &delim, &rest)) {
-		fprintf(fp, " | %s ", token);
-	}
-	fprintf(fp, "|\n");
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int fnestedunordered(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-
-	if (!filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	fprintf(fp, "    - %s\n", buf ? buf : "");
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int furl(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-	char *rest = NULL;
-	char *token;
-	char delim = SPACE;
-
-	if (!buf || !filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	fprintf(fp, "[");
-	for (token = strtok_r(buf, &delim, &rest);
-		token != NULL;
-		token = strtok_r(NULL, &delim, &rest)) {
-		if (strstr(token, "http")) {
-			fprintf(fp, "](%s)", token);
-		} else {
-			fprintf(fp, "%s ", token);
-		}
-	}
-	fprintf(fp, "\n");
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int fquit(char *buf, char *filename)
-{
-	UNUSED(buf);
-	UNUSED(filename);
-
-	exit_needed = true;
-
-	return OK;
-}
-
-int ffreestyle(char *buf, char *filename)
-{
-	UNUSED(buf);
-	UNUSED(filename);
-
-	free_started = true;
-	debugf("free mode started, use 'ESC' to quit\n");
-
-	return OK;
-}
-
-int fstartcode(char *buf, char *filename)
-{
-	UNUSED(buf);
-	UNUSED(filename);
-
-	code_started = true;
-	debugf("code mode started, use 'ESC' to quit\n");
-
-	return OK;
-}
-
-int funorderedlist(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-
-	if (!filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	fprintf(fp, "- %s\n", buf ? buf : "");
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int forderedlist(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-
-	if (!filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	++ordered_list_counter;
-	fprintf(fp, "%s%d. %s\n", (ordered_list_counter == 1) ? "\n" : "", ordered_list_counter, buf ? buf : "");
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int fnestedquote(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-
-	if (!filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	fprintf(fp, "\n>> %s   ", buf ? buf : "");
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int fquote(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-
-	if (!filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	fprintf(fp, "\n> %s   ", buf ? buf : "");
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int fbolditalic(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-
-	if (!buf || !filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	if (strstr(buf, ASTERIKS)) {
-		fprintf(fp, " ___%s___", buf);
-	} else {
-		fprintf(fp, " ***%s***", buf);
-	}
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int fitalic(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-
-	if (!buf || !filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	if (strstr(buf, ASTERIKS)) {
-		fprintf(fp, " _%s_", buf);
-	} else {
-		fprintf(fp, " *%s*", buf);
-	}
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int fbold(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-
-	if (!buf || !filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	if (strstr(buf, ASTERIKS)) {
-		fprintf(fp, " __%s__", buf);
-	} else {
-		fprintf(fp, " **%s**", buf);
-	}
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int flinebreak(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-
-	if (!filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	fprintf(fp, "   \n%s", (buf) ? buf : "");
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int fparagraph(char *buf, char *filename)
-{
-	FILE *fp = NULL;
-
-	if (!filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	fprintf(fp, "\n\n%s", (buf) ? buf : "");
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-static int heading_util(char *buf, char *filename, unsigned int headingcount)
-{
-	unsigned int i = 0;
-	FILE *fp = NULL;
-
-	if (!buf || !filename || headingcount > HEADING_MAX) {
-		errorf("parameters are wrong\n");
-		return NOK;
-	}
-
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	fprintf(fp, "\n");
-	for (i = 0; i < headingcount; i++) {
-		fprintf(fp, "#");
-	}
-	fprintf(fp, " %s\n", buf);
-
-	FCLOSE(fp);
-
-	return OK;
-}
-
-int fheading1(char *buf, char *filename)
-{
-	return heading_util(buf, filename, 1);
-}
-
-int fheading2(char *buf, char *filename)
-{
-	return heading_util(buf, filename, 2);
-}
-
-int fheading3(char *buf, char *filename)
-{
-	return heading_util(buf, filename, 3);
-}
-
-int fheading4(char *buf, char *filename)
-{
-	return heading_util(buf, filename, 4);
-}
-
-int fheading5(char *buf, char *filename)
-{
-	return heading_util(buf, filename, 5);
-}
-
-int fheading6(char *buf, char *filename)
-{
-	return heading_util(buf, filename, 6);
-}
-
-static int disable_icanon(struct termios **oldt)
-{
-	struct termios newt;
-
-	FREE(*oldt);
-
-	*oldt = (struct termios *)calloc(1, sizeof(struct termios));
-	if (!*oldt) {
-		errorf("calloc failed\n");
-		return NOK;
-	}
-
-	tcgetattr(STDIN_FILENO, *oldt);
-
-	newt = **oldt;
-
-	newt.c_lflag &= ~(ICANON);
-
-	tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-
-	return OK;
-}
-
-static void restore_icanon(struct termios **oldt)
-{
-	if (!*oldt) {
-		errorf("parameter is null\n");
-		return;
-	}
-
-	tcsetattr(STDIN_FILENO, TCSANOW, *oldt);
-	FREE(*oldt);
 }
 
 static void sigint_handler(__attribute__((unused)) int sig_num)
 {
-	restore_icanon(&oldt);
+	FREE(set);
+	FREE(data);
+	FREE(dump);
+	FREE(del);
+	ERR_free_strings();
+	fcloseall();
+
 	exit(NOK);
 }
 
-static void process_command(char *buffer, char *filename)
-{
-	unsigned int i = 0, j = 0;
-	char *rest = NULL;
-	char *token;
-	char delim = SPACE;
-
-	if (!buffer || !filename) {
-		errorf("arg is null\n");
-		return;
-	}
-
-	token = strtok_r(buffer, &delim, &rest);
-	if (token && strlen(token)) {
-
-		while(rest && j < strlen(rest) && rest[j] == delim) {
-			j++;
-		}
-		for (i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
-			if (!strcmp(token, commands[i])) {
-				if (i < sizeof(operation) / sizeof(operation[0])) {
-					if (strcmp(commands[i], ORDERED_LIST)) {
-						ordered_list_counter = 0;
-					}
-					operation[i](&rest[j], filename);
-				}
-			}
-		}
-	}
-}
-
-static void clear_screen(void)
-{
-	debugf("\033[2K");
-	debugf("\r");
-}
-
-static void show_all_commands(void)
-{
-	int i = 0;
-	int size = sizeof(commands) / sizeof(commands[0]);
-
-	debugf("possible commands: ");
-	for (i = 0; i < size; i++) {
-		debugf("%s ", commands[i]);
-	}
-	debugf("\n");
-}
-
-static int freeblock_helper(char *buf, char *filename)
+static int create_file(const char *filename)
 {
 	FILE *fp = NULL;
 
 	if (!filename) {
-		errorf("parameters are wrong\n");
 		return NOK;
 	}
 
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
+	fp = fopen(filename, "w+");
+	if (fp == NULL) {
+		errorf("fopen() failed with: %s for the path: %s\n", strerror(errno), filename);
 		return NOK;
 	}
-
-	fprintf(fp, "\n%s\n", buf);
 	FCLOSE(fp);
 
 	return OK;
 }
 
-static int codeblock_helper(char *buf, char *filename)
+static bool is_file_exists(const char *filename)
 {
 	FILE *fp = NULL;
-	char *rest = NULL;
-	char *token;
-	char delim = NL;
 
 	if (!filename) {
-		errorf("parameters are wrong\n");
-		return NOK;
+		return false;
 	}
 
-	fp = fopen(filename, "a+");
-	if (!fp) {
-		errorf("fopen failed\n");
-		return NOK;
-	}
-
-	fprintf(fp, "\n\n");
-	for (token = strtok_r(buf, &delim, &rest);
-		token != NULL;
-		token = strtok_r(NULL, &delim, &rest)) {
-		fprintf(fp, "    %s\n", token);
+	fp = fopen(filename, "r");
+	if (fp == NULL) {
+		return false;
 	}
 
 	FCLOSE(fp);
 
-	return OK;
+	return true;
 }
 
-static void read_and_process(char *filename)
-{
-	char c;
-	char buffer[MAX_LINE_SIZE] = {0};
-	int i = 0;
-	int last_idx = -1;
-	int last_idx_max = -1;
-	int count_count = 0;
-	unsigned int counter = 0;
-	unsigned int command_len = 0;
-	bool command_got = false;
-
-	if (!filename) {
-		errorf("parameter is nulln");
-		return;
-	}
-
-	memset(buffer, 0, sizeof(buffer));
-
-	while(!exit_needed) {
-		c = getc(stdin);
-
-		if (c == TAB) {
-			int size = sizeof(commands) / sizeof(commands[0]);
-			count_count = 0;
-
-			if (code_started || free_started || command_got) {
-				goto cont_loop;
-			}
-
-			if (counter == 0) {
-				show_all_commands();
-				continue;
-			}
-
-			for (i = 0; i < size; i++) {
-				if (strstr(commands[i], buffer) &&
-					commands[i][0] == buffer[0]) {
-					count_count++;
-					last_idx_max = i;
-				}
-			}
-
-			if (last_idx >= last_idx_max) {
-				last_idx = -1;
-			}
-
-			for (i = last_idx + 1; i < size; i++) {
-				if (strstr(commands[i], buffer) &&
-					commands[i][0] == buffer[0]) {
-					last_idx = i;
-					break;
-				}
-			}
-
-			if (counter == 0) {
-				show_all_commands();
-				continue;
-			}
-
-			if (count_count == 1) {
-				clear_screen();
-				memset(buffer, 0, sizeof(buffer));
-				counter = strlen(commands[last_idx]);
-				memcpy(buffer, commands[last_idx], counter);
-				debugf("%s", buffer);
-			} else if (count_count > 0) {
-				clear_screen();
-				if (last_idx >= 0) {
-					debugf("%s", commands[last_idx]);
-				}
-			}
-
-			continue;
-		} else if (c == SPACE) {
-			if (!command_got) {
-				command_got = true;
-
-				if (count_count > 1) {
-					clear_screen();
-
-					memset(buffer, 0, sizeof(buffer));
-					counter = strlen(commands[last_idx]);
-
-					memcpy(buffer, commands[last_idx], counter);
-					command_len = strlen(buffer);
-
-					buffer[command_len] = ' ';
-					counter++;
-
-					debugf("%s", buffer);
-				}
-
-				if (strstr(buffer, TABLE_START)) {
-					debugf("(informative note: use TAB between table elements) ");
-				}
-			}
-		} else if (c == ENTER || c == NL) {
-			if (code_started || free_started) {
-				goto cont_loop;
-			}
-			if (counter == 0) {
-				continue;
-			}
-
-			process_command(buffer, filename);
-
-			memset(buffer, 0, sizeof(buffer));
-			counter = 0;
-			command_got = false;
-			clear_screen();
-			last_idx = -1;
-			count_count = 0;
-
-			continue;
-		} else if (c == ESC) {
-			debugf("\b\b");
-
-			if (!code_started && !free_started) {
-				continue;
-			}
-
-			if (code_started) {
-				code_started = false;
-				codeblock_helper(buffer, filename);
-
-				debugf("code mode ended\n");
-			}
-			if (free_started) {
-				free_started = false;
-				freeblock_helper(buffer, filename);
-
-				debugf("free mode ended\n");
-			}
-
-			memset(buffer, 0, sizeof(buffer));
-			counter = 0;
-			command_got = false;
-			clear_screen();
-			last_idx = -1;
-			count_count = 0;
-
-			continue;
-		} else if (c == BACKSPACE) {
-			clear_screen();
-			if (counter == 0) {
-				continue;
-			}
-
-			buffer[counter - 1] = '\0';
-			counter--;
-			debugf("%s", buffer);
-
-			if (command_got && counter < command_len) {
-				command_got = false;
-				last_idx = -1;
-			}
-
-			continue;
-		} else if (c < SPACE || c >= DEL) {
-			continue;
-		}
-
-cont_loop:
-		buffer[counter++] = c;
-
-		if (counter >= MAX_LINE_SIZE) {
-			process_command(buffer, filename);
-
-			memset(buffer, 0, sizeof(buffer));
-			counter = 0;
-			command_got = false;
-			clear_screen();
-			last_idx = -1;
-			count_count = 0;
-
-			continue;
-		}
-
-		if (!command_got && !strcmp(buffer, COMMAND_QUIT)) {
-			exit_needed = true;
-		}
-	}
-}
-
-int main(int argc, char **argv)
+static int get_plain_text(const char *filename, unsigned char *decryptedtext)
 {
 	int ret = OK;
-	int c, o;
-	char *filename = NULL;
-	
-	if (disable_icanon(&oldt) == NOK) {
-		errorf("disable_icanon failed\n");
+	FILE *fp = NULL;
+	long fsize = 0;
+	unsigned char *new_text = NULL;
+
+	if (!filename || !decryptedtext) {
+		errorf("args cannot be NULL\n");
 		goto fail;
 	}
 
-	signal(SIGINT, sigint_handler);
-
-	while ((c = getopt_long(argc, argv, "h", parameters, &o)) != -1) {
-		switch (c) {
-			case 0x100:
-				print_help_exit();
-				break;
-			case 0x101:
-				filename = strdup(optarg);
-				if (!filename) {
-					errorf("strdup failed\n");
-					goto fail;
-				}
-				break;
-			case 0x102:
-				debugf("%s version %s\n", argv[0], VERSION);
-				return OK;
-				break;
-			default:
-				debugf("unknown argument\n");
-				goto fail;
-		}
+	errno = 0;
+	fp = fopen(filename, "rb");
+	if (fp == NULL) {
+		errorf("fopen() failed with: %s for the path: %s\n", strerror(errno), filename);
+		goto fail;
 	}
 
-	if (!filename) {
-		errorf("file-name is mandatory\n");
-		print_help_exit();
+	fseek(fp, 0, SEEK_END);
+	fsize = ftell(fp);
+	fseek(fp, 0, SEEK_SET);
+
+	if (!fsize) {
+		debugf("fsize is zero, file is empty for now\n");
+		goto fail;
 	}
 
-	debugf("******* %s started ******* \n", argv[0]);
+	debugf("new_text_size: %d\n", (int)fsize);
 
-	read_and_process(filename);
+	new_text = calloc(1, fsize + 1);
+	if (!new_text) {
+		errorf("calloc failed\n");
+		goto fail;
+	}
+
+	if (fsize != (long)fread(new_text, 1, fsize, fp)) {
+		errorf("read error\n");
+		goto fail;
+	}
+	debugf("read size: %d\n", (int)fsize);
+	debugf("read text: %s\n", new_text);
+
+ 	if (decrypt(new_text, fsize, decryptedtext) <= 0) {
+		errorf("decrypt failed\n");
+		goto fail;
+	}
+
+	debugf("decrypted text: '%s'\n", decryptedtext);
 
 	goto out;
 
@@ -849,9 +161,581 @@ fail:
 	ret = NOK;
 
 out:
-	restore_icanon(&oldt);
+	FCLOSE(fp);
+	FREE(new_text);
 
-	debugf("\n******* %s ended ******* \n", argv[0]);
+	return ret;
+}
+
+static int set_text(const char *filename, unsigned char *plain_text)
+{
+	int ret = OK;
+	FILE *fp = NULL;
+	int ciphertext_len = 0;
+	unsigned char ciphertext[MAX_FILE_SIZE];
+
+	if (!filename || !plain_text) {
+		errorf("args cannot be NULL\n");
+		return NOK;
+	}
+
+	memset(ciphertext, 0, sizeof(ciphertext));
+
+	debugf("plain_text: '%s' and len: '%d'\n", plain_text, (int)strlen((char *)plain_text));
+
+	ciphertext_len = encrypt(plain_text, strlen((char *)plain_text), ciphertext);
+	debugf("encrypted text: %s\n", ciphertext);
+
+	if (ciphertext_len < 0) {
+		errorf("encryption failed\n");
+		goto fail;
+	}
+
+	if (!is_file_exists(filename)) {
+		if(create_file(filename) == NOK) {
+			errorf("create_file() failed\n");
+			goto fail;
+		}
+	}
+
+	errno = 0;
+	fp = fopen(filename, "wb");
+	if (fp == NULL) {
+		errorf("fopen() failed with: %s for the path: %s\n", strerror(errno), filename);
+		goto fail;
+	}
+
+	if (strlen((char *)ciphertext) != fwrite(ciphertext, 1, strlen((char *)ciphertext), fp)) {
+		errorf("write error\n");
+		goto fail;
+	}
+
+	goto out;
+
+fail:
+	ret = NOK;
+
+out:
+	FCLOSE(fp);
+
+	return ret;
+}
+
+static bool case_insen_strstr(char *str1, char *str2)
+{
+	int i = 0;
+	int len = 0;
+
+	if (!str1 || !str2) {
+		return false;
+	}
+
+	len = strlen(str1);
+	if (len > (int)strlen(str2)) {
+		len = strlen(str2);
+	}
+
+	for (i = 0; i < len; i++) {
+		if (tolower(str1[i]) != tolower(str2[i])) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static int dump_keywords(const char *filename, char *includes)
+{
+	int ret = OK;
+	unsigned char plain_text[MAX_FILE_SIZE] = {0};
+	char *token = NULL, *token2 = NULL;
+	char *rest = NULL, *rest2 = NULL;
+
+	if (!filename) {
+		errorf("args are wrong\n");
+		return NOK;
+	}
+
+	memset(plain_text, 0, sizeof(plain_text));
+
+	if (get_plain_text(filename, plain_text) == NOK) {
+		errorf("password content cannot be read or its empty\n");
+		goto fail;
+	}
+
+	for (token = strtok_r((char *)plain_text, NEWLINE, &rest); token != NULL; token = strtok_r(NULL, NEWLINE, &rest)) {
+		if (token && strlen(token)) {
+			debugf("token: %s len: %d\n", token, (int)strlen(token));
+			token2 = strtok_r(token, CONFIG_SEPERATOR, &rest2);
+			if (token2 && strlen(token2)) {
+				debugf("token2: %s len: %d\n", token2, (int)strlen(token2));
+				if (includes && case_insen_strstr(token2, includes)) {
+					printf("%s\t%s\n", token2, rest2);
+				} else if (!includes) {
+					printf("%s\t%s\n", token2, rest2);
+				}
+			}
+		}
+	}
+
+	goto out;
+
+fail:
+	ret = NOK;
+
+out:
+
+	return ret;
+}
+
+static int del_password(const char *filename, char *includes)
+{
+	int ret = OK;
+	unsigned char plain_text[MAX_FILE_SIZE];
+	char *plain_text_dup = NULL;
+	char *token = NULL, *token2 = NULL;
+	char *rest = NULL, *rest2 = NULL;
+
+	if (!filename) {
+		errorf("args are wrong\n");
+		return NOK;
+	}
+
+	memset(plain_text, 0, sizeof(plain_text));
+
+	if (get_plain_text(filename, plain_text) == NOK) {
+		errorf("password content cannot be read or its empty\n");
+		goto fail;
+	}
+
+	plain_text_dup = calloc(1, strlen((char *)plain_text) + 1);
+	if (!plain_text_dup) {
+		errorf("calloc failed\n");
+		goto fail;
+	}
+
+	for (token = strtok_r((char *)plain_text, NEWLINE, &rest); token != NULL; token = strtok_r(NULL, NEWLINE, &rest)) {
+		if (token && strlen(token)) {
+			debugf("token: %s len: %d\n", token, (int)strlen(token));
+			token2 = strtok_r(token, CONFIG_SEPERATOR, &rest2);
+			if (token2 && strlen(token2)) {
+				debugf("token2: %s len: %d\n", token2, (int)strlen(token2));
+				if (includes && case_insen_strstr(token2, includes)) {
+ask_again:
+					printf("do you want to delete the %s? [Y/n] :", token2);
+					char c = getc(stdin);
+					if (c == 'Y') {
+						continue;
+					} else if (c != 'n') {
+						goto ask_again;
+					}
+				}
+				strcat(plain_text_dup, token2);
+				strcat(plain_text_dup, CONFIG_SEPERATOR);
+				strcat(plain_text_dup, rest2);
+				strcat(plain_text_dup, NEWLINE);
+				debugf("plain_text_dup: %s  len: %d\n", plain_text_dup, (int)strlen(plain_text_dup));
+			}
+		}
+	}
+
+	debugf("try to add plain_text_dup: %s\n", plain_text_dup);
+	if (set_text(filename, (unsigned char *)plain_text_dup) == NOK) {
+		errorf("set_text() failed\n");
+		goto fail;
+	}
+
+	goto out;
+
+fail:
+	ret = NOK;
+
+out:
+	FREE(plain_text_dup);
+
+	return ret;
+}
+
+static int set_password(const char *filename, const char *set, const char *data)
+{
+	int ret = OK;
+	unsigned char plain_text[MAX_FILE_SIZE];
+	char *plain_text_dup = NULL;
+	char *token = NULL, *token2 = NULL;
+	char *rest = NULL, *rest2 = NULL;
+	enum user_answer answer_is_yes = NOT_ANSWERED;
+
+	if (!filename || !set || !data) {
+		errorf("args are wrong\n");
+		return NOK;
+	}
+
+	if (!filename) {
+		errorf("args are wrong\n");
+		return NOK;
+	}
+
+	memset(plain_text, 0, sizeof(plain_text));
+
+	if (get_plain_text(filename, plain_text) == NOK) {
+		errorf("password content cannot be read, or empty\n");
+	}
+	debugf("plain_text: %s\n", plain_text);
+
+	plain_text_dup = calloc(1, strlen((char *)plain_text) + strlen(set) + strlen(data) + strlen(CONFIG_SEPERATOR) + strlen(NEWLINE) + 1);
+	if (!plain_text_dup) {
+		errorf("calloc failed\n");
+		goto fail;
+	}
+
+	for (token = strtok_r((char *)plain_text, NEWLINE, &rest); token != NULL; token = strtok_r(NULL, NEWLINE, &rest)) {
+		if (token && strlen(token)) {
+			debugf("token: %s  len: %d\n", token, (int)strlen(token));
+			token2 = strtok_r(token, CONFIG_SEPERATOR, &rest2);
+			if (token2 && strlen(token2)) {
+				debugf("token2: %s  len: %d\n", token2, (int)strlen(token2));
+				debugf("rest2: %s  len: %d\n", rest2, (int)strlen(rest2));
+				if (strcmp(set, token2) == 0) {
+ask_again1:
+					printf("there is already saved password for %s\n", token2);
+					printf("do you want to overwrite the old: %s with new: %s? [Y/n] :", rest2, data);
+					char c = getc(stdin);
+					if (c == 'Y') {
+						answer_is_yes = ANSWERED_YES;
+						continue;
+					} else if (c == 'n') {
+						answer_is_yes = ANSWERED_NO;
+					} else {
+						goto ask_again1;
+					}
+				}
+				strcat(plain_text_dup, token2);
+				strcat(plain_text_dup, CONFIG_SEPERATOR);
+				strcat(plain_text_dup, rest2);
+				strcat(plain_text_dup, NEWLINE);
+				debugf("plain_text_dup: %s  len: %d\n", plain_text_dup, (int)strlen(plain_text_dup));
+			}
+		}
+	}
+
+	if (answer_is_yes == NOT_ANSWERED) {
+ask_again2:
+		printf("do you want to save %s for %s? [Y/n] :", data, set);
+		char c = getc(stdin);
+		if (c == 'Y') {
+			//add new entry
+			strcat(plain_text_dup, set);
+			strcat(plain_text_dup, CONFIG_SEPERATOR);
+			strcat(plain_text_dup, data);
+			strcat(plain_text_dup, NEWLINE);
+		} else if (c != 'n') {
+			goto ask_again2;
+		}
+	} else if (answer_is_yes == ANSWERED_YES) {
+		//add new entry
+		strcat(plain_text_dup, set);
+		strcat(plain_text_dup, CONFIG_SEPERATOR);
+		strcat(plain_text_dup, data);
+		strcat(plain_text_dup, NEWLINE);
+	} else {
+		goto out;
+	}
+
+	debugf("try to add plain_text_dup: %s\n", plain_text_dup);
+	if (set_text(filename, (unsigned char *)plain_text_dup) == NOK) {
+		errorf("set_text() failed\n");
+		goto fail;
+	}
+
+	goto out;
+
+fail:
+	ret = NOK;
+
+out:
+	FREE(plain_text_dup);
+
+	return ret;
+}
+
+static int sudo_check(void)
+{
+	if (!getuid() && !geteuid()) {
+		return OK;
+	}
+
+	return NOK;
+}
+
+static int get_user_home_path(char *path, unsigned int len)
+{
+	FILE *p;
+	size_t sz = 0;
+	char username[MAX_LINE_SIZE] = {0};
+	char buffer[MAX_LINE_SIZE] = {0};
+
+	p = popen("pstree -lu -s $$ | grep --max-count=1 -o '([^)]*)' | head -n 1 | sed 's/[()]//g'", "r");
+	if (!p) {
+		errorf("Failed popen");
+		return NOK;
+	}
+
+	sz = fread (username, sizeof(char), sizeof(username) - 1, p);
+	if (ferror(p)) {
+		errorf("pipe reading error");
+		pclose(p);
+		return NOK;
+	}
+
+	username[sz - 1] = '\0'; //eat \n
+	debugf("username:: %s\n", username);
+	pclose(p);
+
+	if (!strlen(username)) {
+		return NOK;
+	}
+
+	snprintf(buffer, MAX_LINE_SIZE, "eval echo ~%s", username);
+	p = popen(buffer, "r");
+	if (!p) {
+		errorf("Failed popen");
+		return NOK;
+	}
+
+	sz = fread (buffer, sizeof(char), sizeof(buffer) - 1, p);
+	if (ferror(p)) {
+		errorf("pipe reading error");
+		pclose(p);
+		return NOK;
+	}
+
+	buffer[sz - 1] = '\0'; //eat \n
+	debugf("userhome:: %s\n", buffer);
+	pclose(p);
+
+	if (!strlen(buffer)) {
+		return NOK;
+	}
+
+	strncpy(path, buffer, len);
+
+	return OK;
+}
+
+static int config_file_check(char *filename)
+{
+	int ret = OK;
+	FILE *fp;
+	char *token = NULL;
+	char buffer[MAX_LINE_SIZE] = {0};
+	char home_path[MAX_LINE_SIZE] = {0};
+
+	if (!filename) {
+		errorf("arg cannot be NULL\n");
+		return NOK;
+	}
+
+	memset(buffer, 0, MAX_LINE_SIZE);
+	memset(home_path, 0, MAX_LINE_SIZE);
+
+	if (get_user_home_path(home_path, MAX_LINE_SIZE) == NOK) {
+		errorf("get_user_home_path() failed\n");
+		return NOK;
+	}
+
+	snprintf(buffer, MAX_LINE_SIZE, "%s/.%s.conf", home_path, APP_NAME);
+	debugf("buffer: %s\n", buffer);
+	fp = fopen(buffer, "r");
+	if (fp != NULL) {
+		debugf("config file exists\n");
+
+		memset(buffer, 0, sizeof(buffer));
+		if (fgets(buffer, sizeof(buffer) - 1, fp)) {
+			buffer[strcspn(buffer, "\n")] = 0;
+
+			token = strtok(buffer, CONFIG_SEPERATOR);
+			if (strcmp(token, FILE_LOCATION) != 0) {
+				errorf("key is wrong\n");
+				goto fail;
+			}
+			token = strtok(NULL, CONFIG_SEPERATOR);
+			if (token == NULL) {
+				errorf("FILE_LOCATION is null");
+				goto fail;
+			}
+			strncpy(filename, token, MAX_LINE_SIZE);
+
+			if (!is_file_exists(filename)) {
+				if(create_file(filename) == NOK) {
+					errorf("create_file() failed\n");
+					goto fail;
+				}
+			}
+
+			goto out;
+		}
+
+		goto fail;
+	}
+
+	errno = 0;
+	fp = fopen(buffer, "w+");
+	if (fp == NULL) {
+		errorf("fopen() failed with: %s for the path: %s\n", strerror(errno), buffer);
+		goto fail;
+	}
+
+	snprintf(buffer, MAX_LINE_SIZE, "%s%s%s/%s.pwd\n", FILE_LOCATION, CONFIG_SEPERATOR, home_path, APP_NAME);
+	debugf("buffer: %s", buffer);
+	if (strlen(buffer) != fwrite(buffer, 1, strlen(buffer), fp)) {
+		errorf("write error\n");
+		goto fail;
+	}
+	snprintf(filename, MAX_LINE_SIZE, "%s/%s.pwd", home_path, APP_NAME);
+
+	if (!is_file_exists(filename)) {
+		if(create_file(filename) == NOK) {
+			errorf("create_file() failed\n");
+			goto fail;
+		}
+	}
+
+	goto out;
+
+fail:
+	ret = NOK;
+
+out:
+	FCLOSE(fp);
+	return ret;
+}
+
+int main(int argc, char **argv)
+{
+	int ret = OK;
+	int c, o;
+	bool is_dump = false, is_dump_all = false;
+	char *set = NULL;
+	char *data = NULL;
+	char *dump = NULL;
+	char *del = NULL;
+	char filename[MAX_LINE_SIZE] = {0};
+
+	signal(SIGINT, sigint_handler);
+
+	OpenSSL_add_all_algorithms();
+	ERR_load_crypto_strings();   
+
+	while ((c = getopt_long(argc, argv, "h", parameters, &o)) != -1) {
+		switch (c) {
+			case 0x100:
+				return print_help_exit();
+				break;
+			case 0x102:
+				debugf("%s version is %s\n", APP_NAME, VERSION);
+				return OK;
+				break;
+			case 0x103:
+				set = strdup(optarg);
+				if (!set) {
+					errorf("strdup failed\n");
+					goto fail;
+				}
+				break;
+			case 0x101:
+				del = strdup(optarg);
+				if (!del) {
+					errorf("strdup failed\n");
+					goto fail;
+				}
+				break;
+			case 0x105:
+				is_dump = true;
+				dump = strdup(optarg);
+				if (!dump) {
+					errorf("strdup failed\n");
+					goto fail;
+				}
+				break;
+			case 0x106:
+				data = strdup(optarg);
+				if (!data) {
+					errorf("strdup failed\n");
+					goto fail;
+				}
+				break;
+			case 0x108:
+				is_dump_all = true;
+				break;
+			default:
+				debugf("unknown argument\n");
+				goto fail;
+		}
+	}
+
+	if (sudo_check() == NOK) {
+		errorf("you need to use this app with 'sudo'\n");
+		goto fail;
+	}
+
+	if (config_file_check(filename) == NOK) {
+		errorf("config_file_check() failed\n");
+		goto fail;
+	}
+	if (!strlen(filename)) {
+		errorf("filename could not be handled\n");
+		goto fail;
+	}
+	debugf("proceed with the file: %s\n", filename);
+
+	if (is_dump_all) {
+		if (dump_keywords(filename, NULL) == NOK) {
+			errorf("dump_keywords() failed\n");
+			goto fail;
+		}
+
+		goto out;
+	}
+
+	if (is_dump) {
+		if (dump_keywords(filename, dump)) {
+			errorf("dump_keywords() failed\n");
+			goto fail;
+		}
+
+		goto out;
+	}
+
+	if (set && data) {
+		if (set_password(filename, set, data)) {
+			errorf("set_password() failed\n");
+			goto fail;
+		}
+
+		goto out;
+	}
+
+	if (del) {
+		if (del_password(filename, del)) {
+			errorf("del_password() failed\n");
+			goto fail;
+		}
+
+		goto out;
+	}
+
+	goto out;
+
+fail:
+	ret = NOK;
+
+out:
+	FREE(set);
+	FREE(data);
+	FREE(dump);
+	FREE(del);
+	ERR_free_strings();
+	fcloseall();
 
 	return ret;
 }
