@@ -14,11 +14,9 @@ SUBDIRS =
 LIBS := -lssl -lcrypto
 
 C_SRCS = \
-aes.c    \
 main.c
 
 OBJS += \
-./aes.o \
 ./main.o
 
 .PHONY: subdirs all clean

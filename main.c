@@ -18,7 +18,14 @@
 #include <openssl/err.h>
 
 #include "main.h"
-#include "aes.h"
+
+#define OPTIONAL_ARGUMENT_IS_PRESENT \
+    ((optarg == NULL && optind < argc && argv[optind][0] != '-') \
+     ? (bool) (optarg = argv[optind++]) \
+     : (optarg != NULL))
+
+static const unsigned char key[] = "01234567890123456789012345678901";
+static const unsigned char iv[]  = "0123456789012345";
 
 static char *set = NULL;
 static char *data = NULL;
@@ -26,33 +33,28 @@ static char *dump = NULL;
 static char *del = NULL;
 
 static struct option parameters[] = {
-	{ "help",				no_argument,		0,	0x100	},
-	{ "version",			no_argument,		0,	0x102	},
-	{ "set",				required_argument,	0,	0x103	},
-	{ "dump",				required_argument,	0,	0x105	},
-	{ "data",				required_argument,	0,	0x106	},
-	{ "dump-all",			no_argument,		0,	0x108	},
-	{ "del",				required_argument,	0,	0x101	},
-	{ NULL,					0,					0, 	0 		},
+	{ "help",				no_argument,		0,	'h'	},
+	{ "version",			no_argument,		0,	'v'	},
+	{ "name",				required_argument,	0,	'n'	},
+	{ "pwd",				required_argument,	0,	'p'	},
+	{ "dump",				optional_argument,	0,	'd'	},
+	{ "remove",				required_argument,	0,	'r'	},
+	{ NULL,					0,					0, 	0 	},
 };
 
 static int print_help_exit (void)
 {
-	printf("\nhelp for '%s' ver: %s\n\n", APP_NAME, VERSION);
+	printf("\n%s - ver: %s\n", APP_NAME, VERSION);
+	printf("This application is used to save your passwords securily in your PC.\n");
 
-	printf("\t--version:\treturns version\n");
-	printf("\t--set:\trequires arg, like password keyword. Also requires 'data' option\n");
-	printf("\t--data:\trequires arg like the password itself. Also requires 'set' option\n");
-	printf("\t--del:\trequires arg, like password keyword.\n");
-	printf("\t--dump:\trequires arg. Will dump all similar-content-keyword-passwords\n");
-	printf("\t--dump-all:\tno arg required. Will dump all keyword-passwords pair\n");
+	printf("\nparameters;\n\n");
+	printf("\t%s--version%s \t(-v): show version\n\n", ANSI_COLOR_BLUE, ANSI_COLOR_RESET);
+	printf("\t%s--name%s    \t(-n): reminder keyword of your password. Eg: github_pwd\n\t\tRequires argument\n\t\tShould be used with '--pwd' argument\n\n", ANSI_COLOR_BLUE, ANSI_COLOR_RESET);
+	printf("\t%s--pwd%s     \t(-p): password itself\n\t\tRequires argument\n\t\tShould be used with '--name' argument\n\n", ANSI_COLOR_BLUE, ANSI_COLOR_RESET);
+	printf("\t%s--dump%s    \t(-d): dump passwords\n\t\tOptional argument\n\t\tIf used without any argument then prints all passwods.\n\t\tIf used with any string argument then prints all similar 'named' passwords\n\n", ANSI_COLOR_BLUE, ANSI_COLOR_RESET);
+	printf("\t%s--remove%s  \t(-r): remove specified 'named' password\n\t\tRequires argument\n\n", ANSI_COLOR_BLUE, ANSI_COLOR_RESET);
 
-	printf("\neg:\n");
-	printf("\tsudo ./spwd --set myPWD1 --data 12345\n");
-	printf("\tsudo ./spwd --set myPWD2 --data 67890\n");
-	printf("\tsudo ./spwd --del myPWD\n");
-	printf("\tsudo ./spwd --dump pwd\n");
-	printf("\tsudo ./spwd --dump-all\n");
+	printf("\n");
 
 	return OK;
 }
@@ -67,6 +69,131 @@ static void sigint_handler(__attribute__((unused)) int sig_num)
 	fcloseall();
 
 	exit(NOK);
+}
+
+static int encrypt(unsigned char *plaintext, int plaintext_len,
+			unsigned char *ciphertext)
+{
+	EVP_CIPHER_CTX *ctx = NULL;
+	int len = 0, ciphertext_len = 0;
+	unsigned char tag[16];
+
+	if (!plaintext || !ciphertext) {
+		errorf("args cannot be NULL\n");
+		goto fail;
+	}
+
+	if(!(ctx = EVP_CIPHER_CTX_new())) {
+		errorf("fail\n");
+		goto fail;
+	}
+
+	if(EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
+		errorf("fail\n");
+		goto fail;
+	}
+
+	if(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, 16, NULL) != 1) {
+		errorf("fail\n");
+		goto fail;
+	}
+
+	if(EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv) != 1) {
+		errorf("fail\n");
+		goto fail;
+	}
+
+	if(EVP_EncryptUpdate(ctx, NULL, &len, (const unsigned char *)APP_NAME, (int)strlen(APP_NAME)) != 1) {
+		errorf("fail\n");
+		goto fail;
+	}
+
+	if(EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len) != 1) {
+		errorf("fail\n");
+		goto fail;
+	}
+
+	ciphertext_len = len;
+
+	if(EVP_EncryptFinal_ex(ctx, ciphertext + len, &len) != 1) {
+		errorf("fail\n");
+		goto fail;
+	}
+	ciphertext_len += len;
+
+	if(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag) != 1) {
+		errorf("fail\n");
+		goto fail;
+	}
+
+	EVP_CIPHER_CTX_free(ctx);
+
+	goto out;
+
+fail:
+	ciphertext_len = -1;;
+
+out:
+	return ciphertext_len;
+}
+
+static int decrypt(unsigned char *ciphertext, int ciphertext_len, 
+			unsigned char *plaintext)
+{
+	EVP_CIPHER_CTX *ctx = NULL;
+	int len = 0, plaintext_len = 0, ret;
+	unsigned char tag[16];
+
+	if (!ciphertext || !plaintext) {
+		errorf("args cannot be NULL\n");
+		goto fail;
+	}
+
+	if(!(ctx = EVP_CIPHER_CTX_new())) {
+		goto fail;
+	}
+
+	if(!EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL)) {
+		goto fail;
+	}
+
+	if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, 16, NULL)) {
+		goto fail;
+	}
+
+	if(!EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv)) {
+		goto fail;
+	}
+
+	if(!EVP_DecryptUpdate(ctx, NULL, &len, (const unsigned char *)APP_NAME, (int)strlen(APP_NAME))) {
+		goto fail;
+	}
+
+	if(!EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len)) {
+		goto fail;
+	}
+
+	plaintext_len = len;
+
+	if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16, tag)) {
+		goto fail;
+	}
+
+	ret = EVP_DecryptFinal_ex(ctx, plaintext + len, &len);
+
+ 	EVP_CIPHER_CTX_free(ctx);
+
+	if(ret > 0) {
+		plaintext_len += len;
+	}
+
+	goto out;
+
+fail:
+	plaintext_len = -1;
+
+out:
+	return plaintext_len;
 }
 
 static int create_file(const char *filename)
@@ -614,7 +741,7 @@ int main(int argc, char **argv)
 {
 	int ret = OK;
 	int c, o;
-	bool is_dump = false, is_dump_all = false;
+	bool is_dump = false;
 	char *set = NULL;
 	char *data = NULL;
 	char *dump = NULL;
@@ -626,46 +753,45 @@ int main(int argc, char **argv)
 	OpenSSL_add_all_algorithms();
 	ERR_load_crypto_strings();   
 
-	while ((c = getopt_long(argc, argv, "h", parameters, &o)) != -1) {
+	while ((c = getopt_long(argc, argv, "hvn:p:r:d::", parameters, &o)) != -1) {
 		switch (c) {
-			case 0x100:
+			case 'h':
 				return print_help_exit();
 				break;
-			case 0x102:
-				debugf("%s version is %s\n", APP_NAME, VERSION);
+			case 'v':
+				printf("%s version is %s\n", APP_NAME, VERSION);
 				return OK;
 				break;
-			case 0x103:
+			case 'n':
 				set = strdup(optarg);
 				if (!set) {
 					errorf("strdup failed\n");
 					goto fail;
 				}
 				break;
-			case 0x101:
+			case 'r':
 				del = strdup(optarg);
 				if (!del) {
 					errorf("strdup failed\n");
 					goto fail;
 				}
 				break;
-			case 0x105:
+			case 'd':
 				is_dump = true;
-				dump = strdup(optarg);
-				if (!dump) {
-					errorf("strdup failed\n");
-					goto fail;
+				if (OPTIONAL_ARGUMENT_IS_PRESENT) {
+					dump = strdup(optarg);
+					if (!dump) {
+						errorf("strdup failed\n");
+						goto fail;
+					}
 				}
 				break;
-			case 0x106:
+			case 'p':
 				data = strdup(optarg);
 				if (!data) {
 					errorf("strdup failed\n");
 					goto fail;
 				}
-				break;
-			case 0x108:
-				is_dump_all = true;
 				break;
 			default:
 				debugf("unknown argument\n");
@@ -687,15 +813,6 @@ int main(int argc, char **argv)
 		goto fail;
 	}
 	debugf("proceed with the file: %s\n", filename);
-
-	if (is_dump_all) {
-		if (dump_keywords(filename, NULL) == NOK) {
-			errorf("dump_keywords() failed\n");
-			goto fail;
-		}
-
-		goto out;
-	}
 
 	if (is_dump) {
 		if (dump_keywords(filename, dump)) {
