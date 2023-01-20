@@ -396,7 +396,7 @@ static int dump_keywords(const char *filename, char *includes)
 			token2 = strtok_r(token, CONFIG_SEPERATOR, &rest2);
 			if (token2 && strlen(token2)) {
 				debugf("token2: %s len: %d\n", token2, (int)strlen(token2));
-				if (includes && case_insen_strstr(token2, includes)) {
+				if (includes && (case_insen_strstr(token2, includes) || strstr(token2, includes))) {
 					printf("%s\t%s\n", token2, rest2);
 				} else if (!includes) {
 					printf("%s\t%s\n", token2, rest2);
